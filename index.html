@@ -9,9 +9,32 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
   <script src="app.js" defer></script>
 </head>
 <body>
+  <section id="authScreen" class="auth-screen" hidden>
+    <div class="auth-card">
+      <a class="brand auth-brand" href="#" aria-label="Layer">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-name">layer<span>.</span></span>
+      </a>
+      <span class="eyebrow">TU TALLER, DESDE CUALQUIER LUGAR</span>
+      <h1 id="authTitle">Inicia sesión</h1>
+      <p class="auth-description">Accede a tus proyectos y mantén tus datos sincronizados en la nube.</p>
+      <form id="authForm">
+        <label class="field">Correo electrónico<input id="authEmail" type="email" autocomplete="email" required placeholder="tu@correo.com"></label>
+        <label class="field">Contraseña<input id="authPassword" type="password" autocomplete="current-password" minlength="8" required placeholder="Mínimo 8 caracteres"></label>
+        <button id="authSubmit" type="submit" class="primary-button auth-submit">Iniciar sesión</button>
+      </form>
+      <button id="authModeToggle" class="text-button auth-toggle" type="button">¿Primera vez? Crear cuenta</button>
+      <p id="authMessage" class="auth-message" role="status"></p>
+      <button id="authSignOutButton" class="text-button auth-toggle" type="button" hidden>Cerrar sesión actual</button>
+      <p class="auth-security">Conexión segura con Supabase. Solo tu cuenta puede acceder a tus datos.</p>
+    </div>
+  </section>
+  <div id="localModeBanner" class="local-mode-banner" hidden>Modo local: los cambios no se sincronizan entre dispositivos. Configura Supabase para habilitar la nube.</div>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="#" data-view="dashboard" aria-label="Layer, inicio">
@@ -37,7 +60,7 @@
           <small id="printerQueueText">Sin trabajos en cola</small>
         </div>
         <button class="nav-link settings-link" data-view="settings"><span class="nav-icon">⚙</span>Configuración</button>
-        <div class="user-profile"><div class="avatar">3D</div><div><strong>Mi taller</strong><small>Plan personal</small></div><span class="profile-menu">•••</span></div>
+        <div class="user-profile"><div class="avatar">3D</div><div><strong id="user-profile-name">Mi taller</strong><small id="user-profile-label">Plan personal</small></div><span class="profile-menu">•••</span></div>
       </div>
     </aside>
 
@@ -47,6 +70,8 @@
         <div class="breadcrumbs"><span>Taller</span><span class="crumb-sep">/</span><strong id="pageTitle">Dashboard</strong></div>
         <div class="topbar-actions">
           <span class="today-label" id="todayLabel"></span>
+          <button id="syncStatus" class="sync-status" type="button" title="Haz clic para volver a sincronizar" hidden></button>
+          <button class="icon-button signout-button" id="signOutButton" type="button" aria-label="Cerrar sesión" title="Cerrar sesión" hidden>↪</button>
           <button class="icon-button notification-button" aria-label="Alertas" data-view="dashboard">♧<i id="alertDot"></i></button>
           <button class="primary-button compact" id="quickAddProject"><span>＋</span> Nuevo proyecto</button>
         </div>

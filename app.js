@@ -1,4 +1,12 @@
 const STORAGE_KEY = "layer3d.workspace.v1";
+const STORAGE_BUCKET = "project-files";
+const CLOUD_CONFIGURED = Boolean(
+  window.LAYER_SUPABASE_CONFIG?.url
+  && window.LAYER_SUPABASE_CONFIG?.anonKey
+  && !window.LAYER_SUPABASE_CONFIG.url.includes("YOUR_PROJECT_ID")
+  && !window.LAYER_SUPABASE_CONFIG.anonKey.includes("YOUR_SUPABASE")
+);
+if (CLOUD_CONFIGURED) document.body.classList.add("cloud-auth-mode");
 const statuses = {
   pending: "Pendiente",
   preparing: "Preparando archivos",
@@ -25,6 +33,47 @@ const dateLabel = value => {
 };
 const uid = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 let attachmentDBPromise;
+let supabaseClient = null;
+let cloudUser = null;
+let signingUp = false;
+let cloudSaveQueue = Promise.resolve();
+let legacyImportPending = false;
+let syncTimer;
+
+function localStateKey() {
+  return cloudUser ? `${STORAGE_KEY}.${cloudUser.id}` : STORAGE_KEY;
+}
+
+function normalizeState(value) {
+  const defaults = createSeed();
+  return {
+    ...defaults,
+    ...value,
+    projects: Array.isArray(value.projects) ? value.projects : defaults.projects,
+    materials: Array.isArray(value.materials) ? value.materials : defaults.materials,
+    prints: Array.isArray(value.prints) ? value.prints : defaults.prints,
+    activity: Array.isArray(value.activity) ? value.activity : defaults.activity
+  };
+}
+
+function setSyncStatus(message, stateName = "idle") {
+  const element = $("#syncStatus");
+  if (!element) return;
+  element.textContent = message;
+  element.dataset.state = stateName;
+  element.hidden = !cloudUser;
+}
+
+function showAuthScreen(message = "") {
+  $("#authScreen").hidden = false;
+  $("#authMessage").textContent = message;
+}
+
+function showCloudError(error, context) {
+  console.error(context, error);
+  setSyncStatus("Error de sincronización", "error");
+  showToast(error?.message || "No se pudo sincronizar con Supabase.");
+}
 
 function attachmentDB() {
   if (!("indexedDB" in window)) return Promise.reject(new Error("Este navegador no permite guardar archivos localmente."));
@@ -39,7 +88,18 @@ function attachmentDB() {
   return attachmentDBPromise;
 }
 
-async function saveAttachment(file) {
+async function saveAttachment(file, projectId) {
+  if (cloudUser) {
+    if (file.size > 50 * 1024 * 1024) throw new Error("Cada archivo debe pesar menos de 50 MB.");
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "archivo";
+    const path = `${cloudUser.id}/${projectId}/${uid()}_${safeName}`;
+    const { error } = await supabaseClient.storage.from(STORAGE_BUCKET).upload(path, file, {
+      contentType: file.type || "application/octet-stream",
+      upsert: false
+    });
+    if (error) throw error;
+    return { id: uid(), name: file.name, type: file.type || "application/octet-stream", size: file.size, storagePath: path };
+  }
   const db = await attachmentDB();
   const attachment = { id: uid(), name: file.name, type: file.type || "application/octet-stream", size: file.size, blob: file };
   await new Promise((resolve, reject) => {
@@ -95,10 +155,10 @@ function createSeed() {
 
 function loadState() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = localStorage.getItem(localStateKey()) || localStorage.getItem(STORAGE_KEY);
     if (!saved) return createSeed();
     const parsed = JSON.parse(saved);
-    return { ...createSeed(), ...parsed };
+    return normalizeState(parsed);
   } catch (error) {
     console.error("No se pudieron cargar los datos guardados.", error);
     return createSeed();
@@ -112,11 +172,192 @@ let toastTimer;
 
 function saveState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(localStateKey(), JSON.stringify(state));
   } catch (error) {
     console.error("No se pudieron guardar los cambios.", error);
     showToast("No se pudieron guardar los cambios. Revisa el espacio del navegador.");
     throw error;
+  }
+  if (cloudUser) queueCloudSave();
+}
+
+function queueCloudSave() {
+  const userId = cloudUser.id;
+  const snapshot = JSON.parse(JSON.stringify(state));
+  clearTimeout(syncTimer);
+  setSyncStatus("Guardado local · sincronizando…", "pending");
+  cloudSaveQueue = cloudSaveQueue.catch(() => {}).then(async () => {
+    if (!cloudUser || cloudUser.id !== userId) return;
+    const { error } = await supabaseClient.from("workspace_state").upsert({
+      user_id: userId,
+      state: snapshot,
+      updated_at: new Date().toISOString()
+    }, { onConflict: "user_id" });
+    if (error) throw error;
+    if (legacyImportPending) {
+      localStorage.removeItem(STORAGE_KEY);
+      legacyImportPending = false;
+    }
+    setSyncStatus("Sincronizado", "synced");
+    syncTimer = setTimeout(() => setSyncStatus("Nube conectada", "idle"), 3000);
+  }).catch(error => showCloudError(error, "No se pudo guardar el espacio de trabajo en Supabase."));
+}
+
+async function migrateLegacyAttachments() {
+  let migrated = false;
+  for (const project of state.projects) {
+    for (const attachment of project.attachments || []) {
+      if (attachment.storagePath || !attachment.id) continue;
+      try {
+        const localFile = await getAttachment(attachment.id);
+        if (!localFile?.blob) continue;
+        const uploaded = await saveAttachment(localFile.blob, project.id);
+        attachment.storagePath = uploaded.storagePath;
+        attachment.type = uploaded.type;
+        attachment.size = uploaded.size;
+        migrated = true;
+      } catch (error) {
+        console.error(`No se pudo migrar el archivo ${attachment.name}.`, error);
+        throw new Error(`No se pudo migrar el archivo "${attachment.name}". Revisa tu conexión e inténtalo de nuevo.`);
+      }
+    }
+  }
+  return migrated;
+}
+
+async function openWorkspace(session) {
+  cloudUser = session.user;
+  $("#authScreen").hidden = true;
+  $("#signOutButton").hidden = false;
+  $("#localModeBanner").hidden = true;
+  setSyncStatus("Cargando nube…", "pending");
+  try {
+    const { data, error } = await supabaseClient.from("workspace_state")
+      .select("state")
+      .eq("user_id", cloudUser.id)
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.state) {
+      state = normalizeState(data.state);
+      legacyImportPending = false;
+    } else {
+      const userCache = localStorage.getItem(localStateKey());
+      const legacyCache = localStorage.getItem(STORAGE_KEY);
+      state = normalizeState(userCache || legacyCache ? JSON.parse(userCache || legacyCache) : createSeed());
+      legacyImportPending = !userCache && Boolean(legacyCache);
+    }
+    const migratedAttachments = await migrateLegacyAttachments();
+    localStorage.setItem(localStateKey(), JSON.stringify(state));
+    if (data?.state) {
+      setSyncStatus("Sincronizado", "synced");
+      if (migratedAttachments) queueCloudSave();
+    } else {
+      queueCloudSave();
+    }
+    render();
+    $("#user-profile-name").textContent = cloudUser.email || "Mi taller";
+    $("#user-profile-label").textContent = "Sincronizado en la nube";
+  } catch (error) {
+    showCloudError(error, "No se pudo cargar el espacio de trabajo desde Supabase.");
+    showAuthScreen(`No se pudieron cargar tus datos. ${error.message || "Verifica la tabla y las políticas de Supabase."}`);
+    $("#signOutButton").hidden = false;
+    $("#authSignOutButton").hidden = false;
+  }
+}
+
+function setAuthMode(createAccount) {
+  signingUp = createAccount;
+  $("#authTitle").textContent = createAccount ? "Crea tu cuenta" : "Inicia sesión";
+  $("#authSubmit").textContent = createAccount ? "Crear cuenta" : "Iniciar sesión";
+  $("#authModeToggle").textContent = createAccount ? "¿Ya tienes cuenta? Iniciar sesión" : "¿Primera vez? Crear cuenta";
+  $("#authPassword").autocomplete = createAccount ? "new-password" : "current-password";
+  $("#authMessage").textContent = "";
+}
+
+async function initCloud() {
+  const config = window.LAYER_SUPABASE_CONFIG;
+  if (!CLOUD_CONFIGURED) {
+    $("#localModeBanner").hidden = false;
+    return;
+  }
+  if (!window.supabase?.createClient) {
+    document.body.classList.add("cloud-auth-mode");
+    showAuthScreen("No se pudo cargar el cliente de Supabase. Revisa tu conexión e inténtalo de nuevo.");
+    return;
+  }
+  document.body.classList.add("cloud-auth-mode");
+  $("#localModeBanner").hidden = true;
+  supabaseClient = window.supabase.createClient(config.url, config.anonKey);
+  $("#authModeToggle").addEventListener("click", () => setAuthMode(!signingUp));
+  $("#authSignOutButton").addEventListener("click", async () => {
+    const { error } = await supabaseClient.auth.signOut();
+    if (error) {
+      $("#authMessage").textContent = error.message || "No se pudo cerrar la sesión.";
+      return;
+    }
+    $("#authSignOutButton").hidden = true;
+    setAuthMode(false);
+    showAuthScreen();
+  });
+  $("#authForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    const email = $("#authEmail").value.trim();
+    const password = $("#authPassword").value;
+    $("#authSubmit").disabled = true;
+    $("#authMessage").textContent = signingUp ? "Creando cuenta…" : "Iniciando sesión…";
+    try {
+      if (signingUp) {
+        const { data, error } = await supabaseClient.auth.signUp({ email, password });
+        if (error) throw error;
+        if (data.session) {
+          await openWorkspace(data.session);
+        } else {
+          setAuthMode(false);
+          $("#authMessage").textContent = "Cuenta creada. Revisa tu correo para confirmar la dirección y después inicia sesión.";
+        }
+      } else {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        await openWorkspace(data.session);
+      }
+    } catch (error) {
+      console.error("Error de autenticación con Supabase.", error);
+      $("#authMessage").textContent = error.message || "No se pudo completar la autenticación.";
+    } finally {
+      $("#authSubmit").disabled = false;
+    }
+  });
+  $("#signOutButton").addEventListener("click", async () => {
+    const { error } = await supabaseClient.auth.signOut();
+    if (error) return showCloudError(error, "No se pudo cerrar la sesión de Supabase.");
+    cloudUser = null;
+    $("#signOutButton").hidden = true;
+    setAuthMode(false);
+    showAuthScreen();
+  });
+  $("#syncStatus").addEventListener("click", () => {
+    if (cloudUser) queueCloudSave();
+  });
+  window.addEventListener("online", () => {
+    if (cloudUser) queueCloudSave();
+  });
+  supabaseClient.auth.onAuthStateChange((event, session) => {
+    if (event === "SIGNED_OUT") {
+      cloudUser = null;
+      $("#signOutButton").hidden = true;
+      setAuthMode(false);
+      showAuthScreen();
+    }
+  });
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) {
+    showAuthScreen(`No se pudo verificar la sesión. ${error.message}`);
+    return;
+  }
+  if (data.session) await openWorkspace(data.session);
+  else {
+    $("#authSignOutButton").hidden = true;
+    showAuthScreen();
   }
 }
 function logActivity(text, color = "blue") {
@@ -426,9 +667,19 @@ function openProjectDetail(id) {
   $$("[data-close]", dialog).forEach(button => button.addEventListener("click", () => dialog.close()));
   $$("[data-download-attachment]", dialog).forEach(button => button.addEventListener("click", async () => {
     try {
-      const file = await getAttachment(button.dataset.downloadAttachment);
-      if (!file) throw new Error("No se encontró el archivo guardado.");
-      const url = URL.createObjectURL(file.blob);
+      const attachment = (project.attachments || []).find(item => item.id === button.dataset.downloadAttachment);
+      if (!attachment) throw new Error("No se encontró el archivo adjunto.");
+      let blob;
+      if (cloudUser && attachment.storagePath) {
+        const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET).download(attachment.storagePath);
+        if (error) throw error;
+        blob = data;
+      } else {
+        const file = await getAttachment(attachment.id);
+        if (!file) throw new Error("No se encontró el archivo guardado en este dispositivo.");
+        blob = file.blob;
+      }
+      const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url; link.download = file.name; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -442,7 +693,7 @@ function openProjectDetail(id) {
     if (!files.length) return;
     try {
       project.attachments = project.attachments || [];
-      for (const file of files) project.attachments.push(await saveAttachment(file));
+      for (const file of files) project.attachments.push(await saveAttachment(file, project.id));
       logActivity(`Se adjuntaron archivos a <strong>${escapeHtml(project.name)}</strong>`, "purple");
       saveState(); dialog.close(); render(); openProjectDetail(id); showToast("Archivos adjuntados al proyecto.");
     } catch (error) {
@@ -552,5 +803,9 @@ function init() {
   $("#todayLabel").textContent = new Date().toLocaleDateString("es-MX", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
   bindGlobalEvents();
   render();
+  initCloud().catch(error => {
+    showCloudError(error, "No se pudo inicializar Supabase.");
+    if (CLOUD_CONFIGURED) showAuthScreen("No se pudo conectar con Supabase. Revisa la configuración y vuelve a cargar la página.");
+  });
 }
 init();
