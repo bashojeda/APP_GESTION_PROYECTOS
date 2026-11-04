@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101114">
+  <title>Layer — Gestión de impresión 3D</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#" data-view="dashboard" aria-label="Layer, inicio">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-name">layer<span>.</span></span>
+      </a>
+      <div class="workspace-label">ESPACIO DE TRABAJO</div>
+      <nav class="main-nav" aria-label="Navegación principal">
+        <button class="nav-link active" data-view="dashboard"><span class="nav-icon">◫</span>Dashboard</button>
+        <button class="nav-link" data-view="projects"><span class="nav-icon">▤</span>Proyectos <span class="nav-count" id="projectNavCount">0</span></button>
+        <button class="nav-link" data-view="queue"><span class="nav-icon">☷</span>Cola de impresión</button>
+        <button class="nav-link" data-view="prints"><span class="nav-icon">▦</span>Impresiones</button>
+        <button class="nav-link" data-view="inventory"><span class="nav-icon">▧</span>Inventario</button>
+        <button class="nav-link" data-view="finances"><span class="nav-icon">＄</span>Finanzas</button>
+        <button class="nav-link" data-view="reports"><span class="nav-icon">▥</span>Reportes</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="printer-card">
+          <div class="printer-card-top"><span class="printer-dot"></span><span>IMPRESORA</span><button aria-label="Configuración de impresora" data-view="settings">•••</button></div>
+          <strong id="printerName">Mi impresora</strong>
+          <span id="printerAvailability">Lista para trabajar</span>
+          <div class="printer-progress"><span id="printerProgress"></span></div>
+          <small id="printerQueueText">Sin trabajos en cola</small>
+        </div>
+        <button class="nav-link settings-link" data-view="settings"><span class="nav-icon">⚙</span>Configuración</button>
+        <div class="user-profile"><div class="avatar">3D</div><div><strong>Mi taller</strong><small>Plan personal</small></div><span class="profile-menu">•••</span></div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobileMenu" aria-label="Abrir menú">☰</button>
+        <div class="breadcrumbs"><span>Taller</span><span class="crumb-sep">/</span><strong id="pageTitle">Dashboard</strong></div>
+        <div class="topbar-actions">
+          <span class="today-label" id="todayLabel"></span>
+          <button class="icon-button notification-button" aria-label="Alertas" data-view="dashboard">♧<i id="alertDot"></i></button>
+          <button class="primary-button compact" id="quickAddProject"><span>＋</span> Nuevo proyecto</button>
+        </div>
+      </header>
+      <section id="pageContent" class="page-content" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <dialog id="projectDialog" class="app-dialog">
+    <form id="projectForm" method="dialog">
+      <div class="dialog-heading"><div><span class="eyebrow">NUEVO ENCARGO</span><h2>Crear proyecto</h2></div><button type="button" class="close-button" data-close="projectDialog" aria-label="Cerrar">×</button></div>
+      <div class="form-grid">
+        <label class="field full">Nombre del proyecto<input name="name" required placeholder="Ej. Casco Mandalorian"></label>
+        <label class="field">Cliente<input name="client" placeholder="Nombre del cliente"></label>
+        <label class="field">Teléfono<input name="phone" type="tel" placeholder="55 1234 5678"></label>
+        <label class="field">Categoría<select name="category"><option>Máscaras</option><option>Cascos</option><option>Props</option><option>Figuras</option><option>Accesorios</option><option>Piezas funcionales</option><option>Otros</option></select></label>
+        <label class="field">Prioridad<select name="priority"><option value="normal">Normal</option><option value="low">Baja</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></label>
+        <label class="field">Entrega estimada<input name="dueDate" type="date"></label>
+        <label class="field">Precio acordado (MXN)<input name="price" type="number" min="0" step="0.01" placeholder="0.00"></label>
+        <label class="field">Horas de impresión<input name="estimatedHours" type="number" min="0" step="0.5" placeholder="0"></label>
+        <label class="field">Cantidad de piezas<input name="pieces" type="number" min="1" value="1"></label>
+        <label class="field full">Descripción<textarea name="description" rows="3" placeholder="Detalles del encargo, acabados o referencias..."></textarea></label>
+      </div>
+      <div class="dialog-footer"><span class="helper-text">Puedes completar los detalles después.</span><button type="button" class="secondary-button" data-close="projectDialog">Cancelar</button><button type="submit" class="primary-button">Crear proyecto</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="printDialog" class="app-dialog">
+    <form id="printForm" method="dialog">
+      <div class="dialog-heading"><div><span class="eyebrow">REGISTRO DE PRODUCCIÓN</span><h2>Nueva impresión</h2></div><button type="button" class="close-button" data-close="printDialog" aria-label="Cerrar">×</button></div>
+      <div class="form-grid">
+        <label class="field full">Proyecto<select name="projectId" required id="printProjectSelect"></select></label>
+        <label class="field">Nombre de la pieza<input name="pieceName" required placeholder="Ej. Visor izquierdo"></label>
+        <label class="field">Resultado<select name="result"><option value="successful">Exitosa</option><option value="failed">Fallida</option><option value="cancelled">Cancelada</option></select></label>
+        <label class="field">Material<select name="materialId" id="printMaterialSelect"><option value="">Sin asignar</option></select></label>
+        <label class="field">Peso usado (g)<input name="weight" type="number" min="0" step="0.1" placeholder="0"></label>
+        <label class="field">Tiempo estimado (h)<input name="estimatedHours" type="number" min="0" step="0.1" placeholder="0"></label>
+        <label class="field">Tiempo real (h)<input name="actualHours" type="number" min="0" step="0.1" placeholder="0"></label>
+        <label class="field full">Observaciones<textarea name="notes" rows="2" placeholder="Ajustes, fallas o detalles del trabajo..."></textarea></label>
+      </div>
+      <div class="dialog-footer"><span class="helper-text">Las impresiones fallidas también cuentan el material.</span><button type="button" class="secondary-button" data-close="printDialog">Cancelar</button><button type="submit" class="primary-button">Guardar impresión</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="inventoryDialog" class="app-dialog">
+    <form id="inventoryForm" method="dialog">
+      <div class="dialog-heading"><div><span class="eyebrow">CONTROL DE MATERIALES</span><h2>Agregar material</h2></div><button type="button" class="close-button" data-close="inventoryDialog" aria-label="Cerrar">×</button></div>
+      <div class="form-grid">
+        <label class="field">Tipo de material<input name="type" required placeholder="PLA, PETG, pintura..."></label>
+        <label class="field">Marca<input name="brand" placeholder="Marca"></label>
+        <label class="field">Color<input name="color" placeholder="Negro mate"></label>
+        <label class="field">Peso inicial (g)<input name="initialWeight" type="number" min="0" step="1" placeholder="1000"></label>
+        <label class="field">Peso restante (g)<input name="remainingWeight" type="number" min="0" step="1" placeholder="1000"></label>
+        <label class="field">Precio compra (MXN)<input name="price" type="number" min="0" step="0.01" placeholder="0"></label>
+        <label class="field">Proveedor<input name="supplier" placeholder="Proveedor"></label>
+        <label class="field">Alerta bajo (g)<input name="lowThreshold" type="number" min="0" step="1" value="200"></label>
+      </div>
+      <div class="dialog-footer"><span class="helper-text">El inventario se descuenta al registrar impresiones.</span><button type="button" class="secondary-button" data-close="inventoryDialog">Cancelar</button><button type="submit" class="primary-button">Agregar al inventario</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="paymentDialog" class="app-dialog">
+    <form id="paymentForm" method="dialog">
+      <div class="dialog-heading"><div><span class="eyebrow">MOVIMIENTO FINANCIERO</span><h2>Registrar pago</h2></div><button type="button" class="close-button" data-close="paymentDialog" aria-label="Cerrar">×</button></div>
+      <div class="form-grid">
+        <label class="field full">Proyecto<select name="projectId" required id="paymentProjectSelect"></select></label>
+        <label class="field">Monto (MXN)<input name="amount" type="number" min="0.01" step="0.01" required placeholder="0.00"></label>
+        <label class="field">Fecha<input name="date" type="date" required></label>
+        <label class="field full">Nota<input name="note" placeholder="Anticipo, pago final..."></label>
+      </div>
+      <div class="dialog-footer"><span class="helper-text">El saldo del proyecto se actualizará automáticamente.</span><button type="button" class="secondary-button" data-close="paymentDialog">Cancelar</button><button type="submit" class="primary-button">Registrar pago</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="detailDialog" class="app-dialog detail-dialog"></dialog>
+  <div id="toast" class="toast" role="status"></div>
+</body>
+</html>
